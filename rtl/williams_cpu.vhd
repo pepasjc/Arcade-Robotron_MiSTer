@@ -161,6 +161,7 @@ architecture Behavioral of williams_cpu is
 
     signal address                  : std_logic_vector(15 downto 0);
     signal ra_offset                : std_logic_vector(15 downto 0);
+    signal ra_off17                 : std_logic_vector(16 downto 0);
     
     signal write                    : boolean;
     signal read                     : boolean;
@@ -414,13 +415,17 @@ begin
 		(address >= X"D000" and address < X"E000") and sinistar='1';
 
     -- RetroAchievements: CPU (logical) address -> FinalBurn Neo "All Ram"
-    -- offset. 0000 DrvM6809RAM0 (Sinistar D000-DFFF), 4200 DrvVidRAM
-    -- (0000-BFFF, unscrambled CPU addresses), E200 DrvPalRAM (C000-C3FF,
-    -- 16 entries), E210 DrvBlitRAM (CA00-CAFF, 8 registers).
-    ra_offset <= "0000" & address(11 downto 0)                                 when hiram_access else
-                 std_logic_vector(unsigned(address) + 16#4200#)               when address < X"C000" else
-                 X"E20" & address(3 downto 0)                                  when color_table_access else
-                 X"E21" & '0' & address(2 downto 0);
+    -- offset (17 bits): 00000 DrvM6809RAM0 (Sinistar D000-DFFF), 04200
+    -- DrvVidRAM (0000-BFFF, unscrambled CPU addresses), 10200 DrvPalRAM
+    -- (C000-C3FF, 16 entries), 10210 DrvBlitRAM (CA00-CAFF, 8 registers).
+    -- The block is 0x10218 bytes; the 64 kB shadow folds 10000-10217 into
+    -- 1000-1217, a part of DrvM6809RAM0 no game uses, so ra_offset is the
+    -- shadow offset.
+    ra_off17  <= "00000" & address(11 downto 0)                                   when hiram_access else
+                 std_logic_vector(unsigned('0' & address) + 16#04200#)           when address < X"C000" else
+                 '1' & X"020" & address(3 downto 0)                               when color_table_access else
+                 '1' & X"021" & '0' & address(2 downto 0);
+    ra_offset <= X"1" & ra_off17(11 downto 0) when ra_off17(16) = '1' else ra_off17(15 downto 0);
 
     -- Color table: write: C000-C3FF
     color_table_access <= std_match(address, "110000----------");

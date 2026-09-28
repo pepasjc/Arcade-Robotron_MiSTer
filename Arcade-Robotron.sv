@@ -494,6 +494,8 @@ wire        ra_wr;
 wire [15:0] ra_off;
 wire  [7:0] ra_data;
 wire  [1:0] ra_ne;
+wire        ra_snd_we;
+wire  [7:0] ra_snd_a, ra_snd_d;
 
 williams_soc soc
 (
@@ -536,7 +538,10 @@ williams_soc soc
 	.ra_wr       ( ra_wr       ),
 	.ra_off      ( ra_off      ),
 	.ra_data     ( ra_data     ),
-	.ra_ne       ( ra_ne       )
+	.ra_ne       ( ra_ne       ),
+	.ra_snd_we   ( ra_snd_we   ),
+	.ra_snd_a    ( ra_snd_a    ),
+	.ra_snd_d    ( ra_snd_d    )
 );
 
 wire [7:0] rom_do;
@@ -778,18 +783,23 @@ nvram #(
 // from jotego's jtframe via the RA jtcores fork). RA arcade sets are written
 // against FinalBurn Neo, whose Williams driver (d_williams.cpp) exposes the
 // MemIndex concatenation AllRam..RamEnd as "All Ram":
-//     0x0000 DrvM6809RAM0 0x4000  Sinistar's extra RAM D000-DFFF (0x0000-0x0FFF)
-//     0x4000 DrvM6800RAM0 0x0100  sound CPU RAM (not tapped, stays zero)
-//     0x4100 DrvM6800RAM1 0x0100  Blaster's 2nd sound CPU (not on this core)
-//     0x4200 DrvVidRAM    0xC000  CPU 0000-BFFF (video + work RAM), by the
-//                                 CPU address (before the board's decoder PROM)
-//     0xE200 DrvPalRAM    0x0010  color table C000-C3FF (address & 0xF)
-//     0xE210 DrvBlitRAM   0x0008  blitter registers CA00-CAFF (address & 7)
-// The 6809 is 8-bit: shadow byte k is RA address k. williams_cpu emits the
-// offset with every CPU/blitter write to those areas; the blitter can write
-// single nibbles, so the shadow takes nibble enables. CMOS (CC00-CFFF) is a
-// separate FBNeo area ("NVRAM") and is not mirrored. The ARM region table is
-// the identity {0, 0xE218, 0}.
+//     0x00000 DrvM6809RAM0 0x4000  Sinistar's extra RAM D000-DFFF (0x0000-0x0FFF)
+//     0x04000 DrvM6800RAM0 0x0100  sound CPU RAM 00-FF
+//     0x04100 DrvM6800RAM1 0x0100  Blaster's 2nd sound CPU (not on this core)
+//     0x04200 DrvVidRAM    0xC000  CPU 0000-BFFF (video + work RAM), by the
+//                                  CPU address (before the board's decoder PROM)
+//     0x10200 DrvPalRAM    0x0010  color table C000-C3FF (address & 0xF)
+//     0x10210 DrvBlitRAM   0x0008  blitter registers CA00-CAFF (address & 7)
+// The 6809 is 8-bit: shadow byte k is RA address k, except that the block is
+// 0x10218 bytes long and the 64 kB shadow folds 0x10000-0x10217 into
+// 0x1000-0x1217 (DrvM6809RAM0 past Sinistar's 4 kB, never written). ARM region
+// table: {0x0000, 0x1000, 0x0000}, {0x4000, 0xC000, 0x4000},
+// {0x10000, 0x218, 0x1000}. williams_cpu emits the shadow offset with every
+// CPU/blitter write to those areas; the blitter can write single nibbles, so
+// the shadow takes nibble enables. The sound board's RAM writes (a level held
+// for the 6800 bus cycle) fill 0x4000-0x40FF whenever the main CPU/blitter is
+// not writing that clock. CMOS (CC00-CFFF) is a separate FBNeo area ("NVRAM")
+// and is not mirrored.
 //
 // The only other DDR client is the screen rotation framebuffer, which runs on
 // CLK_VIDEO (clk_vid, 48 MHz), ignores DDRAM_BUSY and writes one pixel per
@@ -798,6 +808,13 @@ nvram #(
 // copy once VGA_DE has been low for 4096 clocks (85 us, longer than any HBlank):
 // the copy (8k qwords, ~0.2 ms) then runs in VBlank (20 lines, ~1.3 ms) and the
 // framebuffer never loses a write. Held off during ROM download.
+
+// main CPU / blitter writes are one-clock pulses and win; the sound CPU's
+// RAM write strobe is held for its whole bus cycle, so it lands a clock later
+wire        ra_w_we   = ra_wr | ra_snd_we;
+wire [15:0] ra_w_off  = ra_wr ? ra_off  : { 8'h40, ra_snd_a };
+wire  [7:0] ra_w_data = ra_wr ? ra_data : ra_snd_d;
+wire  [1:0] ra_w_ne   = ra_wr ? ra_ne   : 2'b11;
 
 reg [1:0] ra_rst_s, ra_vbl_s, ra_dl_s;
 always @(posedge clk_vid) begin
@@ -825,9 +842,9 @@ williams_ra_mirror #(.AW(16)) ra_mirror
 	.hold(ra_dl_s[1]),
 	.start_ok(&ra_de_idle),
 	.wr_clk(clk_sys),
-	.wr_word(ra_off[15:1]),
-	.wr_din({2{ra_data}}),
-	.wr_ne(~ra_wr ? 4'b0000 : ra_off[0] ? {ra_ne, 2'b00} : {2'b00, ra_ne}),
+	.wr_word(ra_w_off[15:1]),
+	.wr_din({2{ra_w_data}}),
+	.wr_ne(~ra_w_we ? 4'b0000 : ra_w_off[0] ? {ra_w_ne, 2'b00} : {2'b00, ra_w_ne}),
 	.active(ra_active),
 	.ddr_busy(DDRAM_BUSY),
 	.ddr_burstcnt(ra_burstcnt),

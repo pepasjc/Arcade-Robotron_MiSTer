@@ -85,7 +85,10 @@ port (
 	ra_wr            : out   std_logic;
 	ra_off           : out   std_logic_vector(15 downto 0);
 	ra_data          : out   std_logic_vector(7 downto 0);
-	ra_ne            : out   std_logic_vector(1 downto 0)
+	ra_ne            : out   std_logic_vector(1 downto 0);
+	ra_snd_we        : out   std_logic;
+	ra_snd_a         : out   std_logic_vector(7 downto 0);
+	ra_snd_d         : out   std_logic_vector(7 downto 0)
 );
 end williams_soc;
 
@@ -291,7 +294,10 @@ port map(
 	speech_out    => speech_out,
 	rom_addr      => snd_addr,
 	rom_do        => snd_do,
-	spch_do		  => spch_do
+	spch_do		  => spch_do,
+	ra_we         => ra_snd_we,
+	ra_a          => ra_snd_a,
+	ra_d          => ra_snd_d
 );
 
 end Behavioral;

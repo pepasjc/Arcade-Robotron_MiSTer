@@ -37,7 +37,12 @@ port(
 	rom_addr     : out std_logic_vector(13 downto 0);
 	rom_do       : in  std_logic_vector( 7 downto 0);
 	spch_do      : in  std_logic_vector( 7 downto 0);
-	rom_vma      : out std_logic
+	rom_vma      : out std_logic;
+
+	-- RetroAchievements tap: sound CPU RAM write (level, as the RAM sees it)
+	ra_we        : out std_logic;
+	ra_a         : out std_logic_vector( 7 downto 0);
+	ra_d         : out std_logic_vector( 7 downto 0)
 );
 end williams_sound_board;
 
@@ -105,6 +110,10 @@ rom_cs  <= '1' when cpu_addr(15 downto 12) = X"F" else '0';                     
 
 -- write enables
 wram_we  <= '1' when cpu_rw = '0' and wram_cs = '1' else '0';
+
+ra_we <= wram_we;
+ra_a  <= cpu_addr(7 downto 0);
+ra_d  <= cpu_do;
 pia_rw_n <= '0' when cpu_rw = '0' and pia_cs = '1'  else '1'; 
 
 -- mux cpu in data between roms/io/wram
