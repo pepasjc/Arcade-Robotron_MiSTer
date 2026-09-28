@@ -79,7 +79,13 @@ port (
 	dl_addr          : in    std_logic_vector(16 downto 0);
 	dl_data          : in    std_logic_vector(7 downto 0);
 	dl_wr            : in    std_logic;
-	dl_upload        : in    std_logic
+	dl_upload        : in    std_logic;
+
+	-- RetroAchievements tap (see williams_cpu)
+	ra_wr            : out   std_logic;
+	ra_off           : out   std_logic_vector(15 downto 0);
+	ra_data          : out   std_logic_vector(7 downto 0);
+	ra_ne            : out   std_logic_vector(1 downto 0)
 );
 end williams_soc;
 
@@ -239,7 +245,12 @@ port map (
 	dl_clock         => dl_clock,
 	dl_addr          => dl_addr,
 	dl_data          => dl_data,
-	dl_wr            => dl_wr
+	dl_wr            => dl_wr,
+
+	ra_wr            => ra_wr,
+	ra_off           => ra_off,
+	ra_data          => ra_data,
+	ra_ne            => ra_ne
 );
 
 snd_rom : entity work.dpram

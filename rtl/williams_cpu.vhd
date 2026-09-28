@@ -102,7 +102,15 @@ entity williams_cpu is
 		dl_clock         : in    std_logic;
 		dl_addr          : in    std_logic_vector(16 downto 0);
 		dl_data          : in    std_logic_vector(7 downto 0);
-		dl_wr            : in    std_logic
+		dl_wr            : in    std_logic;
+
+		-- RetroAchievements tap: one-clock write strobe into FinalBurn Neo's
+		-- "All Ram" block (d_williams.cpp MemIndex), with its byte offset,
+		-- data and nibble enables (bit 0 = bits 3:0, bit 1 = bits 7:4).
+		ra_wr            : out   std_logic;
+		ra_off           : out   std_logic_vector(15 downto 0);
+		ra_data          : out   std_logic_vector(7 downto 0);
+		ra_ne            : out   std_logic_vector(1 downto 0)
 	);
 end williams_cpu;
 
@@ -152,6 +160,7 @@ architecture Behavioral of williams_cpu is
     -------------------------------------------------------------------
 
     signal address                  : std_logic_vector(15 downto 0);
+    signal ra_offset                : std_logic_vector(15 downto 0);
     
     signal write                    : boolean;
     signal read                     : boolean;
@@ -404,6 +413,15 @@ begin
     hiram_access <=
 		(address >= X"D000" and address < X"E000") and sinistar='1';
 
+    -- RetroAchievements: CPU (logical) address -> FinalBurn Neo "All Ram"
+    -- offset. 0000 DrvM6809RAM0 (Sinistar D000-DFFF), 4200 DrvVidRAM
+    -- (0000-BFFF, unscrambled CPU addresses), E200 DrvPalRAM (C000-C3FF,
+    -- 16 entries), E210 DrvBlitRAM (CA00-CAFF, 8 registers).
+    ra_offset <= "0000" & address(11 downto 0)                                 when hiram_access else
+                 std_logic_vector(unsigned(address) + 16#4200#)               when address < X"C000" else
+                 X"E20" & address(3 downto 0)                                  when color_table_access else
+                 X"E21" & '0' & address(2 downto 0);
+
     -- Color table: write: C000-C3FF
     color_table_access <= std_match(address, "110000----------");
 
@@ -472,6 +490,8 @@ begin
             --memory_output_enable <= false;
             memory_write <= false;
             memory_data_out <= (others => '0');
+
+            ra_wr <= '0';
 
             blt_reg_cs <= '0';
             blt_blt_ack <= '0';
@@ -568,6 +588,10 @@ begin
                     if ram_access and write then
                         memory_data_out <= blt_data_out;
                         memory_write <= true;
+                        ra_wr   <= '1';
+                        ra_off  <= ra_offset;
+                        ra_data <= blt_data_out;
+                        ra_ne   <= to_std_logic(blt_en_upper) & to_std_logic(blt_en_lower);
                     else
                         --memory_output_enable <= true;
                     end if;
@@ -634,6 +658,14 @@ begin
                         --if address(2 downto 0) = "011" then
                         --    debug_blt_source_address(7 downto 0) <= mpu_data_in;
                         --end if;
+                    end if;
+
+                    -- RetroAchievements tap (CMOS is a separate FBNeo area)
+                    if (ram_access or color_table_access or blt_register_access) and write then
+                        ra_wr   <= '1';
+                        ra_off  <= ra_offset;
+                        ra_data <= mpu_data_in;
+                        ra_ne   <= "11";
                     end if;
 
                     if rom_pia_access then

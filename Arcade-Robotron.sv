@@ -201,7 +201,7 @@ assign VIDEO_ARY = (!ar) ? ((status[2] | landscape) ? 12'd939 : 12'd1184) : 12'd
 
 `include "build_id.v" 
 localparam CONF_STR = {
-	"A.ROBTRN;;", 
+	"RA_ROBTRN;;", 
 	"-;",
 	"H0OGH,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"H1H0O2,Orientation,Vert,Horz;",
@@ -489,6 +489,12 @@ wire        ramub;
 
 wire        sg_state;
 
+// RetroAchievements tap (see RETROACHIEVEMENTS below)
+wire        ra_wr;
+wire [15:0] ra_off;
+wire  [7:0] ra_data;
+wire  [1:0] ra_ne;
+
 williams_soc soc
 (
 	.clock       ( clk_sys     ),
@@ -525,7 +531,12 @@ williams_soc soc
 	.dl_addr     ( ioctl_addr[16:0] ),
 	.dl_data     ( ioctl_dout  ),
 	.dl_wr       ( ioctl_wr & rom_download ),
-	.dl_upload   ( ioctl_upload )
+	.dl_upload   ( ioctl_upload ),
+
+	.ra_wr       ( ra_wr       ),
+	.ra_off      ( ra_off      ),
+	.ra_data     ( ra_data     ),
+	.ra_ne       ( ra_ne       )
 );
 
 wire [7:0] rom_do;
@@ -593,7 +604,25 @@ end
 wire rotate_ccw = 1;
 wire flip = 0;
 wire video_rotated;
-screen_rotate screen_rotate (.*);
+
+// The rotation framebuffer shares the DDR port with the RetroAchievements
+// mirror (see below), so its DDRAM outputs go through the RA mux.
+wire  [7:0] rot_burstcnt, rot_be;
+wire [28:0] rot_addr;
+wire [63:0] rot_din;
+wire        rot_we, rot_rd;
+
+screen_rotate screen_rotate
+(
+	.*,
+	.DDRAM_CLK(),
+	.DDRAM_BURSTCNT(rot_burstcnt),
+	.DDRAM_ADDR(rot_addr),
+	.DDRAM_DIN(rot_din),
+	.DDRAM_BE(rot_be),
+	.DDRAM_WE(rot_we),
+	.DDRAM_RD(rot_rd)
+);
 
 arcade_video #(296,8) arcade_video
 (
@@ -742,5 +771,78 @@ nvram #(
 	.nvram_data_out(hs_data_out),
 	.pause_cpu(hs_pause)
 );
+
+///////////////////   RETROACHIEVEMENTS   //////////////////
+//
+// RAM mirror for the RetroAchievements fork of Main_MiSTer (williams_ra_mirror.v,
+// from jotego's jtframe via the RA jtcores fork). RA arcade sets are written
+// against FinalBurn Neo, whose Williams driver (d_williams.cpp) exposes the
+// MemIndex concatenation AllRam..RamEnd as "All Ram":
+//     0x0000 DrvM6809RAM0 0x4000  Sinistar's extra RAM D000-DFFF (0x0000-0x0FFF)
+//     0x4000 DrvM6800RAM0 0x0100  sound CPU RAM (not tapped, stays zero)
+//     0x4100 DrvM6800RAM1 0x0100  Blaster's 2nd sound CPU (not on this core)
+//     0x4200 DrvVidRAM    0xC000  CPU 0000-BFFF (video + work RAM), by the
+//                                 CPU address (before the board's decoder PROM)
+//     0xE200 DrvPalRAM    0x0010  color table C000-C3FF (address & 0xF)
+//     0xE210 DrvBlitRAM   0x0008  blitter registers CA00-CAFF (address & 7)
+// The 6809 is 8-bit: shadow byte k is RA address k. williams_cpu emits the
+// offset with every CPU/blitter write to those areas; the blitter can write
+// single nibbles, so the shadow takes nibble enables. CMOS (CC00-CFFF) is a
+// separate FBNeo area ("NVRAM") and is not mirrored. The ARM region table is
+// the identity {0, 0xE218, 0}.
+//
+// The only other DDR client is the screen rotation framebuffer, which runs on
+// CLK_VIDEO (clk_vid, 48 MHz), ignores DDRAM_BUSY and writes one pixel per
+// CE_PIXEL while VGA_DE is high. So the mirror is clocked by clk_vid too (its
+// shadow is written from clk_sys through dual-clock BRAM), and it only starts a
+// copy once VGA_DE has been low for 4096 clocks (85 us, longer than any HBlank):
+// the copy (8k qwords, ~0.2 ms) then runs in VBlank (20 lines, ~1.3 ms) and the
+// framebuffer never loses a write. Held off during ROM download.
+
+reg [1:0] ra_rst_s, ra_vbl_s, ra_dl_s;
+always @(posedge clk_vid) begin
+	ra_rst_s <= { ra_rst_s[0], reset };
+	ra_vbl_s <= { ra_vbl_s[0], VBlank };
+	ra_dl_s  <= { ra_dl_s[0],  ioctl_download };
+end
+
+reg [11:0] ra_de_idle;
+always @(posedge clk_vid) begin
+	if (VGA_DE) ra_de_idle <= 0;
+	else if (~&ra_de_idle) ra_de_idle <= ra_de_idle + 1'd1;
+end
+
+wire  [7:0] ra_burstcnt, ra_be;
+wire [28:0] ra_addr;
+wire [63:0] ra_din;
+wire        ra_we, ra_active;
+
+williams_ra_mirror #(.AW(16)) ra_mirror
+(
+	.rst(ra_rst_s[1]),
+	.clk(clk_vid),
+	.lvbl(~ra_vbl_s[1]),
+	.hold(ra_dl_s[1]),
+	.start_ok(&ra_de_idle),
+	.wr_clk(clk_sys),
+	.wr_word(ra_off[15:1]),
+	.wr_din({2{ra_data}}),
+	.wr_ne(~ra_wr ? 4'b0000 : ra_off[0] ? {ra_ne, 2'b00} : {2'b00, ra_ne}),
+	.active(ra_active),
+	.ddr_busy(DDRAM_BUSY),
+	.ddr_burstcnt(ra_burstcnt),
+	.ddr_addr(ra_addr),
+	.ddr_we(ra_we),
+	.ddr_be(ra_be),
+	.ddr_din(ra_din)
+);
+
+assign DDRAM_CLK      = clk_vid;
+assign DDRAM_BURSTCNT = ra_active ? ra_burstcnt : rot_burstcnt;
+assign DDRAM_ADDR     = ra_active ? ra_addr     : rot_addr;
+assign DDRAM_DIN      = ra_active ? ra_din      : rot_din;
+assign DDRAM_BE       = ra_active ? ra_be       : rot_be;
+assign DDRAM_WE       = ra_active ? ra_we       : rot_we;
+assign DDRAM_RD       = ra_active ? 1'b0        : rot_rd;
 
 endmodule
